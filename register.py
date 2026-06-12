@@ -2,13 +2,16 @@
 Đăng ký Student Server với Teacher Server.
 
 Lệnh:
-    python register.py register     # đăng ký URL máy mình  (nhanh)
-    python register.py evaluate     # BẮT ĐẦU THI -- block ~10 phút
-    python register.py result       # check điểm hiện tại    (nhanh)
-    python register.py reset        # reset nếu crash        (nhanh)
+    python register.py register                # đăng ký URL máy mình  (nhanh)
+    python register.py evaluate                # LẦN ĐẦU: document_received=False
+                                               #   teacher gửi /upload rồi 100 câu /ask
+    python register.py evaluate --received     # lần sau: document_received=True
+                                               #   bỏ qua /upload, chỉ bơm 100 câu
+    python register.py result                  # check điểm hiện tại    (nhanh)
+    python register.py reset                   # reset nếu crash        (nhanh)
 """
+import argparse
 import os
-import sys
 import requests
 
 TEACHER_BASE = "http://192.168.50.218:8000/api/v1"
@@ -17,10 +20,10 @@ SERVER_URL   = os.getenv("SERVER_URL", "http://192.168.50.229:5000")  # <-- IP L
 
 HEADERS = {"X-Student-ID": STUDENT_ID}
 
-# /evaluate sẽ block đến khi Teacher gọi xong 10 câu hỏi ngược về Student:
-#   /upload (max 120s) + 10 * /ask (max 60s) ~= tối đa 12 phút
-# -> timeout phía requests phải >= 15 phút
-EVAL_TIMEOUT = 900   # 15 phút
+# /evaluate sẽ block đến khi Teacher gọi xong 100 câu hỏi ngược về Student:
+#   /upload (max 120s) + 100 * /ask (max 60s) ~= tối đa 102 phút
+# -> timeout phía requests phải >= 105 phút để có buffer
+EVAL_TIMEOUT = 6300   # 105 phút
 SHORT_TIMEOUT = 15
 
 def register():
@@ -31,11 +34,16 @@ def register():
     print("STATUS:", r.status_code)
     print("BODY  :", r.text)
 
-def evaluate():
-    print(f"[*] Bắt đầu thi... (block tối đa {EVAL_TIMEOUT}s, đừng tắt cửa sổ này)")
+def evaluate(received: bool = False):
+    payload = {"document_received": received}
+    flag = "SKIP UPLOAD (lần sau)" if received else "FULL (upload + 100 câu)"
+    print(f"[*] Bắt đầu thi  [{flag}]")
+    print(f"[*] Block tối đa {EVAL_TIMEOUT}s (~{EVAL_TIMEOUT // 60} phút), đừng tắt cửa sổ này")
+    print(f"[*] Payload: {payload}")
     print(f"[*] Theo dõi log /upload và /ask ở Terminal main.py")
     r = requests.post(f"{TEACHER_BASE}/competition/evaluate",
                       headers=HEADERS,
+                      json=payload,
                       timeout=EVAL_TIMEOUT)
     print("STATUS:", r.status_code)
     print("BODY  :", r.text)
@@ -55,8 +63,16 @@ def reset():
     print("BODY  :", r.text)
 
 if __name__ == "__main__":
-    cmd = sys.argv[1] if len(sys.argv) > 1 else "register"
-    {"register": register,
-     "evaluate": evaluate,
-     "result":   result,
-     "reset":    reset}[cmd]()
+    parser = argparse.ArgumentParser(description="Khiem Teacher Server CLI")
+    parser.add_argument("command", choices=["register", "evaluate", "result", "reset"])
+    parser.add_argument(
+        "--received",
+        action="store_true",
+        help="Gửi document_received=True (đã upload + embed xong từ lần thi trước).",
+    )
+    args = parser.parse_args()
+
+    if args.command == "evaluate":
+        evaluate(received=args.received)
+    else:
+        {"register": register, "result": result, "reset": reset}[args.command]()

@@ -73,7 +73,7 @@ def reset():
     print("BODY  :", r.text)
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Vu Teacher Server CLI")
+    parser = argparse.ArgumentParser(description="Khiem Teacher Server CLI")
     parser.add_argument("command", choices=["register", "evaluate", "result", "reset"])
     parser.add_argument(
         "--received",

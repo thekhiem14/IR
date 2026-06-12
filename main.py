@@ -18,9 +18,11 @@ Cải tiến chính:
 
 import os
 import re
+import io
 import json
 import uuid
 import time
+import pickle
 import logging
 from collections import Counter, defaultdict
 from typing import List, Optional, Tuple, Dict, Any
@@ -56,6 +58,8 @@ LLM_TIMEOUT_S  = 20
 VOTE_TEMPS = [0.0, 0.0, 0.3, 0.5, 0.7]
 
 LOG_PATH = "ask_log.jsonl"
+VECTOR_DB_PATH = os.getenv("VECTOR_DB_PATH", "./storage/vectordb.pkl")
+VECTOR_DB_VERSION = 1
 
 logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s | %(levelname)s | %(message)s")
@@ -211,6 +215,52 @@ def build_indices(chunks: List[str]):
     index.add(vecs)
     bm25 = BM25Okapi([tokenize_vi(c) for c in chunks])
     return index, bm25
+
+# =============================================================
+# PERSIST VECTOR DB
+# =============================================================
+def save_vector_db():
+    if store.index is None or not store.chunks:
+        return
+    os.makedirs(os.path.dirname(VECTOR_DB_PATH) or ".", exist_ok=True)
+    buf = io.BytesIO()
+    faiss.write_index(store.index, faiss.PyCallbackIOWriter(buf.write))
+    payload = {
+        "version": VECTOR_DB_VERSION,
+        "chunks": store.chunks,
+        "doc_id": store.doc_id,
+        "is_law_doc": store.is_law_doc,
+        "faiss_bytes": buf.getvalue(),
+    }
+    tmp = VECTOR_DB_PATH + ".tmp"
+    with open(tmp, "wb") as f:
+        pickle.dump(payload, f, protocol=pickle.HIGHEST_PROTOCOL)
+    os.replace(tmp, VECTOR_DB_PATH)
+    log.info("VectorDB saved: %s (%d chunks)", VECTOR_DB_PATH, len(store.chunks))
+
+def load_vector_db() -> bool:
+    if not os.path.isfile(VECTOR_DB_PATH):
+        return False
+    try:
+        with open(VECTOR_DB_PATH, "rb") as f:
+            payload = pickle.load(f)
+        if payload.get("version") != VECTOR_DB_VERSION:
+            log.warning("VectorDB version mismatch, skip load")
+            return False
+        chunks = payload["chunks"]
+        buf = io.BytesIO(payload["faiss_bytes"])
+        index = faiss.read_index(faiss.PyCallbackIOReader(buf.read))
+        bm25 = BM25Okapi([tokenize_vi(c) for c in chunks])
+        store.chunks = chunks
+        store.index = index
+        store.bm25 = bm25
+        store.doc_id = payload.get("doc_id")
+        store.is_law_doc = payload.get("is_law_doc", False)
+        log.info("VectorDB loaded: %s (%d chunks)", VECTOR_DB_PATH, len(chunks))
+        return True
+    except Exception as e:
+        log.warning("Failed to load VectorDB: %s", e)
+        return False
 
 # =============================================================
 # TÁCH STEM + 4 CHOICES
@@ -471,6 +521,7 @@ app = FastAPI(title="Student RAG Server v4 (multi-query)", version="4.0")
 @app.on_event("startup")
 def _startup():
     store.load_embedder()
+    load_vector_db()
     log.info("Server ready. STUDENT_ID=%s", STUDENT_ID)
 
 @app.get("/health")
@@ -524,6 +575,11 @@ def upload(req: UploadRequest):
                 "n_chunks": len(chunks),
                 "is_law_doc": store.is_law_doc,
                 "sample_chunks": chunks[:3]})
+
+        try:
+            save_vector_db()
+        except Exception as e:
+            log.warning("save_vector_db failed: %s", e)
 
         return UploadResponse(status="success",
                               doc_id=store.doc_id,
